@@ -69,10 +69,21 @@ Add to your Cursor config (`~/.cursor/mcp.json`):
 ## Tools
 
 ### `get_datasets`
-List available datasets with optional filtering.
+Search and list available datasets.
+
+Two search modes:
+- `semantic` (default): ranks the catalog by meaning using the `vector_similarity` explore endpoint from Huwise. Best for natural-language / conceptual queries. Matches synonyms and other languages.
+- `lexical`: classic full-text match on the exact terms.
 
 ```
-get_datasets(limit=10, offset=0, search="luft", refine="publisher:Statistisches Amt")
+# semantic (default) — natural language, ranked by relevance
+get_datasets(search="air quality measurements")
+
+# lexical — exact full-text match
+get_datasets(search="luft", search_mode="lexical")
+
+# combine with facet filters
+get_datasets(search="bevölkerung", refine="publisher:Statistisches Amt")
 ```
 
 ### `get_dataset`
