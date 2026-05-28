@@ -1,9 +1,38 @@
+from pathlib import Path
+
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("data-bs.ch")
 
-BASE_URL = "https://data.bs.ch/api/explore/v2.1"
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+# Read directly from the .env file next to this
+# module. The process environment is intentionally not consulted so an MCP
+# client cannot override the catalog via its config's env block.
+_env_path = Path(__file__).parent / ".env"
+if not _env_path.is_file():
+    raise RuntimeError(f"Missing .env file at {_env_path}")
+
+_config = _read_env_file(_env_path)
+DOMAIN = _config.get("DATA_PORTAL_DOMAIN", "").strip()
+
+if not DOMAIN:
+    raise RuntimeError(f"DATA_PORTAL_DOMAIN is not set in {_env_path}")
+
+DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
+BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
+
+mcp = FastMCP(DOMAIN)
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
@@ -43,8 +72,7 @@ def _escape_odsql(value: str) -> str:
 @mcp.tool(
     title="Search Datasets",
     description=(
-        "Search and list available open datasets from data.bs.ch (Basel-Stadt open "
-        "data portal). Searching runs server-side via the API. Two modes: 'semantic' "
+        f"Search and list available open datasets from {DOMAIN}. Two modes: 'semantic' "
         "(default) ranks the catalog by meaning using natural-language queries "
         "(handles synonyms and other languages); 'lexical' does a classic full-text "
         "match on the exact terms. Use semantic for conceptual discovery, lexical for "
@@ -63,7 +91,7 @@ async def get_datasets(
     include_app_metas: bool = False,
 ) -> dict:
     """
-    List available datasets from data.bs.ch with optional filtering.
+    List available datasets from the configured catalog with optional filtering.
 
     Args:
         limit: Number of items to return (default: 10, max: 100)

@@ -1,6 +1,6 @@
 # data-bs-mcp
 
-MCP server for [data.bs.ch](https://data.bs.ch) OpenDataSoft API v2.1.
+MCP server for any Huwise/Opendatasoft data portal.
 
 ## Installation
 
@@ -23,6 +23,23 @@ npx @modelcontextprotocol/inspector uv run main.py
 ```bash
 uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
 ```
+
+## Selecting a catalog
+
+The catalog is chosen by whoever deploys the server via the `.env` file next to
+`main.py`. All Huwise/Opendatasoft portals share the same API
+path, so you only set the domain:
+
+```
+# .env
+DATA_PORTAL_DOMAIN=data.bl.ch
+```
+
+The full API base URL is built as
+`https://<domain>/api/explore/v2.1`.
+
+The `.env` file is committed, so a fork carries its
+catalog choice through `uvx` installs as well.
 
 ## Configuration
 
