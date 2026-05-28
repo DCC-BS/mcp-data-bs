@@ -123,8 +123,9 @@ async def get_datasets(
         params["timezone"] = timezone
     if include_app_metas:
         params["include_app_metas"] = "true"
-    if search:
-        query = _escape_odsql(search)
+    normalized_search = " ".join(search.split()) if search else ""
+    if normalized_search:
+        query = _escape_odsql(normalized_search)
         if search_mode == "lexical":
             params["where"] = f'search("{query}")'
             if order_by:
