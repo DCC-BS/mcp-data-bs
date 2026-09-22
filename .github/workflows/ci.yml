@@ -9,5 +9,3 @@ on:
 jobs:
   ci:
     uses: DCC-BS/ci-workflows/.github/workflows/ci.yml@2bfad28c27c02b4fe13dbadeb2b8ae970b2fae15
-    with:
-      working_directory: "."
