@@ -1,7 +1,10 @@
+import os
 from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -16,23 +19,34 @@ def _read_env_file(path: Path) -> dict[str, str]:
     return values
 
 
-# Read directly from the .env file next to this
-# module. The process environment is intentionally not consulted so an MCP
-# client cannot override the catalog via its config's env block.
-_env_path = Path(__file__).parent / ".env"
-if not _env_path.is_file():
-    raise RuntimeError(f"Missing .env file at {_env_path}")
+# The catalog domain comes from the environment first (container, compose,
+# systemd) and falls back to the committed .env next to this module, so the
+# same checkout works locally and in a container.
+def _resolve_domain() -> str:
+    value = os.environ.get("DATA_PORTAL_DOMAIN", "").strip()
+    if value:
+        return value
+    _env_path = Path(__file__).parent / ".env"
+    if _env_path.is_file():
+        return _read_env_file(_env_path).get("DATA_PORTAL_DOMAIN", "").strip()
+    return ""
 
-_config = _read_env_file(_env_path)
-DOMAIN = _config.get("DATA_PORTAL_DOMAIN", "").strip()
+
+DOMAIN = _resolve_domain()
 
 if not DOMAIN:
-    raise RuntimeError(f"DATA_PORTAL_DOMAIN is not set in {_env_path}")
+    raise RuntimeError(
+        "DATA_PORTAL_DOMAIN is not set in the environment or the .env file next to main.py"
+    )
 
 DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
 BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
-mcp = FastMCP(DOMAIN)
+mcp = FastMCP(
+    DOMAIN,
+    stateless_http=True,
+    streamable_http_path="/mcp",
+)
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
@@ -167,10 +181,7 @@ async def get_dataset(dataset_id: str) -> dict:
         "modified": metas.get("default", {}).get("modified"),
         "language": metas.get("default", {}).get("language", []),
         "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
-        "fields": [
-            {"name": f.get("name"), "type": f.get("type")}
-            for f in data.get("fields", [])
-        ],
+        "fields": [{"name": f.get("name"), "type": f.get("type")} for f in data.get("fields", [])],
     }
 
 
@@ -286,8 +297,30 @@ async def export_dataset_url(
     return url
 
 
+def _healthz(request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
+def create_http_app():
+    """Build a fresh ASGI app. Call once per process; tests create one per case
+    because the underlying session manager may run only once per instance."""
+    app = mcp.streamable_http_app()
+    app.router.routes.insert(0, Route("/healthz", _healthz))
+    return app
+
+
+http_app = create_http_app()
+
+
 def main():
     mcp.run(transport="stdio")
+
+
+def main_http():
+    import uvicorn
+
+    port = int(os.environ.get("PORT", "8000"))
+    uvicorn.run(http_app, host="0.0.0.0", port=port, log_level="info")
 
 
 if __name__ == "__main__":

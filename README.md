@@ -1,6 +1,13 @@
 # data-bs-mcp
 
-MCP server for any Huwise/Opendatasoft data portal.
+MCP server for any Huwise/Opendatasoft data portal — query open datasets from
+data.bs.ch (and other portals on the same platform) through the Explore 2.1 API.
+
+It runs in two modes:
+
+- **stdio** — for local MCP clients (opencode, Cursor, Claude Desktop).
+- **streamable HTTP** — hosted as a container, so it can be wired into ChatGPT
+  connectors and OpenWebUI. Also ships a **skill** as a no-server alternative.
 
 ## Installation
 
@@ -8,80 +15,100 @@ MCP server for any Huwise/Opendatasoft data portal.
 uv sync
 ```
 
-## Usage
+Requires [mise](https://mise.jdx.dev/) for the pinned toolchain and task runner
+(tools = uv only; Python version comes from `pyproject.toml`).
 
 ```bash
-uv run main.py
+mise run install   # alias: i — uv sync --locked
 ```
 
-## Debug
-```bash
-npx @modelcontextprotocol/inspector uv run main.py
-```
+## Local usage
 
-### Install with uvx
 ```bash
-uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+mise run dev            # stdio (alias: d)
+mise run check          # format + lint + lockfile (alias: c)
+mise run test:unit      # pytest (alias: t)
+mise run dev:http       # streamable HTTP on :8000 for local testing (alias: dh)
 ```
 
 ## Selecting a catalog
 
-The catalog is chosen by whoever deploys the server via the `.env` file next to
-`main.py`. All Huwise/Opendatasoft portals share the same API
-path, so you only set the domain:
+The catalog is chosen by whoever runs the server. Configuration is read from the
+`DATA_PORTAL_DOMAIN` environment variable first, else the committed `.env` next
+to `main.py`:
 
 ```
 # .env
-DATA_PORTAL_DOMAIN=data.bl.ch
+DATA_PORTAL_DOMAIN=data.bs.ch
 ```
 
-The full API base URL is built as
-`https://<domain>/api/explore/v2.1`.
+The API base URL is built as `https://<domain>/api/explore/v2.1`. All
+Huwise/Opendatasoft portals share this path, so changing the domain targets a
+different portal.
 
-The `.env` file is committed, so a fork carries its
-catalog choice through `uvx` installs as well.
+## Hosting (streamable HTTP)
 
-## Configuration
+Deploy as a container. The image is built against the DCC shared base image
+(`ghcr.io/dcc-bs/dcc-docker-images/mise:13-slim`); see `Dockerfile`.
 
-### OpenCode
+```bash
+docker build -f Dockerfile -t mcp-data-bs .
+docker run --rm -p 8000:8000 -e DATA_PORTAL_DOMAIN=data.bs.ch mcp-data-bs
+```
 
-Add to your OpenCode config:
+Healthcheck: `GET /healthz -> {"status":"ok"}`.
 
-```json
-{
-  "mcpServers": {
-    "data-bs": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/ABSOLUTE/PATH/TO/data-bs-mcp",
-        "run",
-        "main.py"
-      ]
+### Docker Compose
+
+`compose.yml` pulls the published GHCR image, sets the domain, and healthchecks:
+`docker compose up -d`.
+
+### Publishing (CI)
+
+This repo uses the DCC reusable workflows ([ci-workflows](https://github.com/DCC-BS/ci-workflows)):
+
+- `.github/workflows/ci.yml` runs `mise run check` and `mise run test:unit`
+  automatically on push/PR (tasks absent from `mise.toml` are skipped).
+- `.github/workflows/publish.yml` (manual `workflow_dispatch`) builds and pushes
+  to GHCR using `publish-docker.yml@v2`. Bump the version in `pyproject.toml`,
+  then dispatch to tag the image `<version>` + `latest`.
+
+## Connecting clients
+
+### ChatGPT (developer-mode connector)
+
+Add a custom connector pointing at the hosted HTTP URL (e.g.
+`https://mcp.your-domain/mcp`), no auth. All five tools are exposed and usable.
+
+### OpenWebUI
+
+Recent OpenWebUI versions support MCP over streamable HTTP natively:
+Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain/mcp`).
+
+### Local stdio clients
+
+- **opencode**: add to OpenCode config:
+  ```json
+  {
+    "mcpServers": {
+      "data-bs": {
+        "command": "uv",
+        "args": ["--directory", "/ABSOLUTE/PATH/TO/data-bs-mcp", "run", "main.py"]
+      }
     }
   }
-}
-```
+  ```
+- **uvx** (anywhere):
+  ```bash
+  uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+  ```
 
-### Cursor
+## Skills (no MCP needed)
 
-Add to your Cursor config (`~/.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "data-bs": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/ABSOLUTE/PATH/TO/data-bs-mcp",
-        "run",
-        "main.py"
-      ]
-    }
-  }
-}
-```
+Prefer not to run a server? Install the agent skill instead — it teaches an
+agent to hit the public REST API directly with plain HTTP (curl/httpx). See
+`skills/data-bs/SKILL.md`; copy or symlink it into your agent's skills directory
+(e.g. `~/.agents/skills/data-bs`).
 
 ## Tools
 
@@ -104,7 +131,7 @@ get_datasets(search="bevölkerung", refine="publisher:Statistisches Amt")
 ```
 
 ### `get_dataset`
-Get detailed metadata for a specific dataset.
+Get detailed metadata for a specific dataset (fields, schema, publisher).
 
 ```
 get_dataset(dataset_id="100113")
@@ -132,3 +159,9 @@ export_dataset_url(dataset_id="100113", format="csv", where="sensornr=240")
 ```
 
 Formats: `csv`, `json`, `geojson`, `xlsx`, `shp`, `parquet`, `gpx`, `kml`, `rdfxml`, `jsonld`, `turtle`
+
+## Debug
+
+```bash
+npx @modelcontextprotocol/inspector uv run main.py
+```

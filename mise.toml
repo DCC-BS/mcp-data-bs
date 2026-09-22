@@ -1,0 +1,47 @@
+[tools]
+uv = "0.12.5"
+
+[hooks]
+postinstall = { task = "install" }
+
+[tasks.install]
+description = "Create the virtual environment and install dependencies"
+alias = "i"
+sources = ["pyproject.toml", "uv.lock"]
+outputs = [".venv"]
+run = '''
+if [ "${DOCKER_BUILD:-}" = "1" ]; then
+    # In Docker: locked, no dev deps. The Dockerfile sets DOCKER_BUILD=1.
+    uv sync --locked --no-dev
+else
+    # Locally: dev deps for tests/lint.
+    uv sync --locked
+fi
+'''
+
+[tasks.dev]
+description = "Run the MCP server over stdio (local clients)"
+alias = "d"
+depends = ["install"]
+run = "uv run main.py"
+
+[tasks."dev:http"]
+description = "Run the MCP server over streamable HTTP for local testing"
+alias = "dh"
+depends = ["install"]
+run = "uv run uvicorn main:http_app --host 0.0.0.0 --port ${PORT:-8000}"
+
+[tasks.check]
+description = "Verify lockfile, format, and lint"
+alias = "c"
+run = [
+    "uv lock --locked",
+    "uv run ruff format --check",
+    "uv run ruff check",
+]
+
+[tasks."test:unit"]
+description = "Run the unit test suite"
+alias = "t"
+depends = ["install"]
+run = "uv run pytest"

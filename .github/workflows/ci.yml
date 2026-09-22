@@ -1,0 +1,13 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: DCC-BS/ci-workflows/.github/workflows/ci.yml@v2
+    with:
+      working_directory: "."
