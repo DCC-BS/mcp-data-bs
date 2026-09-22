@@ -11,25 +11,36 @@ It runs in two modes:
 
 ## Installation
 
-```bash
-uv sync
-```
-
-Requires [mise](https://mise.jdx.dev/) for the pinned toolchain and task runner
-(tools = uv only; Python version comes from `pyproject.toml`).
+The toolchain (uv only; Python version comes from `pyproject.toml`) and the task
+runner are managed by [mise](https://mise.jdx.dev/). Enter the project and trust
+the config once:
 
 ```bash
-mise run install   # alias: i — uv sync --locked
+mise trust
+mise install            # provisions uv, runs the postinstall hook
 ```
 
-## Local usage
+Then set up the virtual environment and dependencies:
 
 ```bash
-mise run dev            # stdio (alias: d)
-mise run check          # format + lint + lockfile (alias: c)
-mise run test:unit      # pytest (alias: t)
-mise run dev:http       # streamable HTTP on :8000 for local testing (alias: dh)
+mise run install        # alias: i — uv sync --locked
 ```
+
+The `postinstall` hook runs `install` automatically on tool provisioning.
+
+## Tasks
+
+All standard DCC task names are available via `mise run <task>`; see
+`mise.toml`. In Docker the `install` task syncs `--no-dev` (driven by
+`DOCKER_BUILD=1`).
+
+| Task                 | Alias | Description                                       |
+|----------------------|-------|---------------------------------------------------|
+| `mise run install`   | `i`   | Create venv and install deps (`uv sync --locked`) |
+| `mise run dev`       | `d`   | MCP server over stdio (local clients)             |
+| `mise run dev:http`  | `dh`  | Streamable HTTP on `:8000` for local testing      |
+| `mise run check`     | `c`   | Verify lockfile, format, and lint (ruff)          |
+| `mise run test:unit` | `t`   | Run the unit test suite (pytest)                  |
 
 ## Selecting a catalog
 
