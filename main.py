@@ -21,7 +21,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 
 # The catalog domain comes from the environment first (container, compose,
-# systemd) and falls back to the committed .env next to this module, so the
+# systemd) and falls back to a local .env next to this module, so the
 # same checkout works locally and in a container.
 def _resolve_domain() -> str:
     value = os.environ.get("DATA_PORTAL_DOMAIN", "").strip()

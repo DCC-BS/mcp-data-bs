@@ -34,12 +34,17 @@ mise run dev:http       # streamable HTTP on :8000 for local testing (alias: dh)
 ## Selecting a catalog
 
 The catalog is chosen by whoever runs the server. Configuration is read from the
-`DATA_PORTAL_DOMAIN` environment variable first, else the committed `.env` next
-to `main.py`:
+`DATA_PORTAL_DOMAIN` environment variable first, else a local `.env` file next to
+`main.py`. Copy the example and fill it in:
 
 ```
+cp .env.example .env
+```
+
+```bash
 # .env
 DATA_PORTAL_DOMAIN=data.bs.ch
+MCP_ALLOWED_HOSTS=mcp.bs.ch:*   # optional, see Hosting
 ```
 
 The API base URL is built as `https://<domain>/api/explore/v2.1`. All
@@ -105,7 +110,8 @@ Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain/mcp`).
     }
   }
   ```
-- **uvx** (anywhere):
+- **uvx** (anywhere): set `DATA_PORTAL_DOMAIN` in your environment first (the
+  `.env` is no longer committed). `uvx` runs the same code as a local checkout.
   ```bash
   uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
   ```
