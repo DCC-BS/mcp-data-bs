@@ -3,6 +3,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
@@ -42,10 +43,27 @@ if not DOMAIN:
 DOMAIN = DOMAIN.removeprefix("https://").removeprefix("http://").strip("/")
 BASE_URL = f"https://{DOMAIN}/api/explore/v2.1"
 
+
+def _transport_security() -> TransportSecuritySettings:
+    """DNS-rebinding protection for the HTTP endpoint. FastMCP auto-enables
+    Host-header validation limited to localhost when no host is given, which
+    would reject real deployment hosts with 421. Configure the allowed hosts
+    via MCP_ALLOWED_HOSTS (comma-separated, e.g. "mcp.bs.ch:*"); when unset,
+    protection is disabled so the server is reachable on any Host header."""
+    allowed = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    if not allowed:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed,
+    )
+
+
 mcp = FastMCP(
     DOMAIN,
     stateless_http=True,
     streamable_http_path="/mcp",
+    transport_security=_transport_security(),
 )
 
 

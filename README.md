@@ -58,10 +58,17 @@ docker run --rm -p 8000:8000 -e DATA_PORTAL_DOMAIN=data.bs.ch mcp-data-bs
 
 Healthcheck: `GET /healthz -> {"status":"ok"}`.
 
+> **Remote hosting requires `MCP_ALLOWED_HOSTS`.** The MCP HTTP endpoint has
+> DNS-rebinding protection on by default and, without config, accepts only
+> localhost `Host` headers — a remote deploy would get `421 Invalid Host header`.
+> When the server is reachable via a public hostname, list it (comma-separated,
+> port-wildcard allowed): `MCP_ALLOWED_HOSTS="mcp.bs.ch:*"`. When unset,
+> protection is disabled so any `Host` header is accepted.
+
 ### Docker Compose
 
-`compose.yml` pulls the published GHCR image, sets the domain, and healthchecks:
-`docker compose up -d`.
+`compose.yml` pulls the published GHCR image, sets the domain and allowed
+hostname(s), and healthchecks: `docker compose up -d`.
 
 ### Publishing (CI)
 

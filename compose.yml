@@ -7,6 +7,9 @@ services:
     environment:
       DATA_PORTAL_DOMAIN: data.bs.ch
       PORT: "8000"
+      # Host header allowed past DNS-rebinding protection; add the public
+      # hostname(s) this deployment is served under (with :* port wildcard).
+      MCP_ALLOWED_HOSTS: "dev2.tail11201e.ts.net:*"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
       interval: 30s
