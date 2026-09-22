@@ -1,0 +1,19 @@
+services:
+  mcp-data-bs:
+    image: ghcr.io/dcc-bs/mcp-data-bs:${IMAGE_TAG:-0.1.0}
+    container_name: ${CONTAINER_NAME:-mcp-data-bs}
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    environment:
+      DATA_PORTAL_DOMAIN: ${DATA_PORTAL_DOMAIN:-data.bs.ch}
+      PORT: "8000"
+      # Host header allowed past DNS-rebinding protection; add the public
+      # hostname(s) this deployment is served under (with :* port wildcard).
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
