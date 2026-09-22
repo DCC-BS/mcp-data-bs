@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-    DATA_PORTAL_DOMAION: test-domain
+    DATA_PORTAL_DOMAIN: test-domain
 
 jobs:
   ci:
