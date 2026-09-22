@@ -42,6 +42,7 @@ run = [
 
 [tasks."test:unit"]
 description = "Run the unit test suite"
+env = { DATA_PORTAL_DOMAIN = "test-domain" }
 alias = "t"
 depends = ["install"]
 run = "uv run pytest"
