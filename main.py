@@ -62,7 +62,7 @@ def _transport_security() -> TransportSecuritySettings:
 mcp = FastMCP(
     DOMAIN,
     stateless_http=True,
-    streamable_http_path="/mcp",
+    streamable_http_path="/",
     transport_security=_transport_security(),
 )
 
