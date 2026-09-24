@@ -18,4 +18,4 @@ def test_routes_present():
     app = _app()
     paths = [r.path for r in app.router.routes]
     assert "/healthz" in paths
-    assert "/mcp" in paths
+    assert "/" in paths

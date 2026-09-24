@@ -101,12 +101,12 @@ This repo uses the DCC reusable workflows ([ci-workflows](https://github.com/DCC
 ### ChatGPT (developer-mode connector)
 
 Add a custom connector pointing at the hosted HTTP URL (e.g.
-`https://mcp.your-domain/mcp`), no auth. All five tools are exposed and usable.
+`https://mcp.your-domain`), no auth. All five tools are exposed and usable.
 
 ### OpenWebUI
 
 Recent OpenWebUI versions support MCP over streamable HTTP natively:
-Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain/mcp`).
+Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain`).
 
 ### Local stdio clients
 
