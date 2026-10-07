@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -311,7 +312,10 @@ async def export_dataset_url(
     """
     url = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
     if where:
-        url += f"?where={where}"
+        # ODSQL clauses routinely contain spaces, quotes, "=" and "&" (e.g.
+        # commune="La Hulpe" and year>=2020): percent-encode so the URL is valid
+        # and the clause reaches the API intact.
+        url += "?" + urlencode({"where": where}, quote_via=quote)
     return url
 
 

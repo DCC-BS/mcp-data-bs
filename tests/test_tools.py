@@ -69,3 +69,28 @@ async def test_get_dataset_simplifies_fields(mock_fetch):
 
     assert calls == [{"endpoint": "/catalog/datasets/100113", "params": {}}]
     assert result["fields"] == [{"name": "a", "type": "text"}]
+
+
+@pytest.mark.anyio
+async def test_export_url_without_where_has_no_query():
+    import main
+
+    url = await main.export_dataset_url("100113", format="geojson")
+
+    assert url == f"{main.BASE_URL}/catalog/datasets/100113/exports/geojson"
+
+
+@pytest.mark.anyio
+async def test_export_url_encodes_where_clause():
+    from urllib.parse import parse_qs, urlsplit
+
+    import main
+
+    where = 'commune="La Hulpe" and year>=2020 & x'
+    url = await main.export_dataset_url("100113", format="csv", where=where)
+
+    parts = urlsplit(url)
+    assert " " not in url and '"' not in url
+    assert parts.path.endswith("/catalog/datasets/100113/exports/csv")
+    # round-trip: the API receives exactly the clause that was passed
+    assert parse_qs(parts.query) == {"where": [where]}
