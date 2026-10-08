@@ -2,10 +2,13 @@ import os
 from pathlib import Path
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
+
+import api_docs
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -59,12 +62,31 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP(
-    DOMAIN,
-    stateless_http=True,
-    streamable_http_path="/",
-    transport_security=_transport_security(),
-)
+class RelaxedAcceptHeaderMiddleware(BaseHTTPMiddleware):
+    """Tolerate JSON-RPC clients that send incomplete Accept headers.
+
+    The streamable HTTP transport rejects POST requests without an Accept
+    header listing both application/json and text/event-stream (406), which
+    plain JSON-RPC clients routinely omit. Rewrite those Accept headers to
+    what the transport requires before the request reaches it."""
+
+    async def dispatch(self, request, call_next):
+        if request.method == "POST":
+            accept = request.headers.get("accept", "")
+            if "text/event-stream" not in accept or "application/json" not in accept:
+                request.scope["headers"] = [
+                    (k, v) for k, v in request.scope["headers"] if k.lower() != b"accept"
+                ] + [(b"accept", b"application/json, text/event-stream")]
+        return await call_next(request)
+
+
+mcp = MCPServer(DOMAIN)
+
+MCP_HTTP_SETTINGS = {
+    "streamable_http_path": "/mcp",
+    "stateless_http": True,
+    "transport_security": _transport_security(),
+}
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
@@ -140,6 +162,16 @@ async def get_datasets(
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_app_metas: Include application metadata in response
 
+    Full-text notes (lexical mode and ODSQL search generally):
+        search("Hitze") tokenizes and also matches substrings/partial words, so
+        it may return tangential hits (e.g. "Hitzkirch" when looking for heat).
+        For precision, combine operators in `where` clauses (records) or here
+        with refine/exclude: quoted multi-word phrase search("öffentliche
+        Frage") matches the exact phrase; AND / OR / NOT combine terms, e.g.
+        search("Verkehr") AND NOT search("Tram"). Use get_facets to find exact
+        filterable values, and prefer refine over search when the exact term is
+        known.
+
     Returns:
         Dictionary with total_count and results array containing dataset metadata.
         Note: in semantic mode the catalog is ranked rather than filtered, so
@@ -186,9 +218,29 @@ async def get_dataset(dataset_id: str) -> dict:
 
     Returns:
         Dataset metadata including title, description, theme, keywords, etc.
+        Each field entry contains `name`, `type`, and capability flags from the
+        schema annotations: `sortable` (usable in order_by), `facet` (usable in
+        refine/exclude), plus `disjunctive`/`timerangeFilter` where declared.
+        Flags are absent when the annotation is missing — treat missing as
+        "not supported". Verify against the actual field list instead of
+        guessing in `where`/`order_by`, and prefer `refine` with an exact
+        facet value over a full-text search when the value is known.
     """
     data = await fetch(f"/catalog/datasets/{dataset_id}")
     metas = data.get("metas", {})
+    annotations: list[dict] = []
+    for f in data.get("fields", []):
+        caps = f.get("annotations", {}) or {}
+        entry: dict = {"name": f.get("name"), "type": f.get("type")}
+        if caps.get("sortable"):
+            entry["sortable"] = True
+        if caps.get("facet"):
+            entry["facet"] = True
+        if caps.get("disjunctive"):
+            entry["disjunctive"] = True
+        if caps.get("timerangeFilter"):
+            entry["timerange_filter"] = True
+        annotations.append(entry)
     return {
         "dataset_id": data.get("dataset_id"),
         "title": metas.get("default", {}).get("title"),
@@ -199,7 +251,7 @@ async def get_dataset(dataset_id: str) -> dict:
         "modified": metas.get("default", {}).get("modified"),
         "language": metas.get("default", {}).get("language", []),
         "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
-        "fields": [{"name": f.get("name"), "type": f.get("type")} for f in data.get("fields", [])],
+        "fields": annotations,
     }
 
 
@@ -237,6 +289,19 @@ async def get_records(
         lang: Language for formatting (e.g., "en", "de", "fr")
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_links: Include HATEOAS links in response
+
+    ODSQL search notes for `where`:
+        search("Hitze") tokenizes and also matches substrings/partial words, so
+        it can return tangential hits (e.g. "Hitzkirch" when looking for heat).
+        For precision:
+        - Phrase search: search("öffentliche Frage") matches the exact phrase.
+        - Boolean combos: AND, OR, NOT — e.g. search("Verkehr") AND NOT
+          search("Tram").
+        - Field comparison: field = "value" (exact), field LIKE "pattern" with
+          % wildcards, e.g. titel_ges LIKE "Verkehr%" (case-insensitive); this
+          is the precise alternative to substring-matching search().
+        - Facet fields (see get_dataset, flag `facet: true`) are fastest via
+          refine/exclude with their exact values (get_facets lists them).
 
     Returns:
         Dictionary with total_count and results array containing record data
@@ -319,11 +384,39 @@ def _healthz(request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+def _index(request) -> JSONResponse:
+    return JSONResponse(
+        {
+            "server": DOMAIN,
+            "status": "ok",
+            "transport": "mcp-streamable-http",
+            "endpoints": {
+                "mcp": "/mcp",
+                "health": "/healthz",
+                "openapi": "/openapi.json",
+                "docs": "/docs",
+            },
+        }
+    )
+
+
+def _openapi(request) -> JSONResponse:
+    return JSONResponse(api_docs.build_openapi(DOMAIN, mcp._tool_manager.list_tools()))
+
+
+def _docs(request) -> HTMLResponse:
+    return HTMLResponse(api_docs.docs_page(DOMAIN))
+
+
 def create_http_app():
     """Build a fresh ASGI app. Call once per process; tests create one per case
     because the underlying session manager may run only once per instance."""
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(**MCP_HTTP_SETTINGS)
+    app.add_middleware(RelaxedAcceptHeaderMiddleware)
+    app.router.routes.insert(0, Route("/", _index))
     app.router.routes.insert(0, Route("/healthz", _healthz))
+    app.router.routes.insert(0, Route("/openapi.json", _openapi))
+    app.router.routes.insert(0, Route("/docs", _docs))
     return app
 
 
