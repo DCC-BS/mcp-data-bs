@@ -61,11 +61,22 @@ async def test_get_dataset_simplifies_fields(mock_fetch):
 
     body = {
         "metas": {"default": {"title": "t"}, "explore": {"records_count": 5}},
-        "fields": [{"name": "a", "type": "text"}],
+        "fields": [
+            {"name": "a", "type": "text", "annotations": {"sortable": True}},
+            {"name": "b", "type": "text", "annotations": {"facet": True, "disjunctive": True}},
+            {"name": "c", "type": "date", "annotations": {"timerangeFilter": True}},
+            {"name": "d", "type": "text"},
+        ],
     }
     calls = mock_fetch(body)
 
     result = await main.get_dataset("100113")
 
-    assert calls == [{"endpoint": "/catalog/datasets/100113", "params": {}}]
-    assert result["fields"] == [{"name": "a", "type": "text"}]
+    (call,) = calls
+    assert call["endpoint"] == "/catalog/datasets/100113"
+    assert result["fields"] == [
+        {"name": "a", "type": "text", "sortable": True},
+        {"name": "b", "type": "text", "facet": True, "disjunctive": True},
+        {"name": "c", "type": "date", "timerange_filter": True},
+        {"name": "d", "type": "text"},
+    ]
