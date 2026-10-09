@@ -92,6 +92,9 @@ MCP_HTTP_SETTINGS = {
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
+    """GET from the Explore API. API errors are raised as ToolError with the portal's own message
+    (e.g. "Incompatible types in comparison filter ... where"), so the calling model can fix its query;
+    any other exception would reach the client only as "Error executing tool <name>"."""
     try:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
             response = await client.get(endpoint, params=params)
@@ -119,10 +122,22 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
         raise ToolError(f"Upstream API returned malformed JSON for {endpoint}: {exc}") from exc
 
 
+def dataset_url(dataset_id) -> str:
+    """Public page of a dataset: the URL to cite for anything taken from it."""
+    return f"https://{DOMAIN}/explore/dataset/{dataset_id}/"
+
+
 def _to_str(value) -> str:
     if isinstance(value, list):
         return " ".join(str(v) for v in value)
     return str(value) if value else ""
+
+
+LIST_DESCRIPTION_CHARS = 400
+
+
+def _short(text: str, limit: int = LIST_DESCRIPTION_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def _simplify_dataset(data: dict) -> dict:
@@ -132,7 +147,9 @@ def _simplify_dataset(data: dict) -> dict:
     return {
         "dataset_id": data.get("dataset_id"),
         "title": _to_str(default.get("title")),
-        "description": _to_str(default.get("description")),
+        "url": dataset_url(data.get("dataset_id")),
+        # list results: the start of the description; get_dataset returns all of it
+        "description": _short(_to_str(default.get("description"))),
         "theme": _to_str(default.get("theme")),
         "keyword": default.get("keyword", []) or [],
         "publisher": _to_str(default.get("publisher")),
@@ -267,6 +284,7 @@ async def get_dataset(dataset_id: str) -> dict:
     return {
         "dataset_id": data.get("dataset_id"),
         "title": metas.get("default", {}).get("title"),
+        "url": dataset_url(data.get("dataset_id")),
         "description": metas.get("default", {}).get("description"),
         "theme": metas.get("default", {}).get("theme"),
         "keyword": metas.get("default", {}).get("keyword", []),
@@ -348,7 +366,9 @@ async def get_records(
         params["timezone"] = timezone
     if include_links:
         params["include_links"] = "true"
-    return await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
+
+    data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
+    return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
 
 
 @mcp.tool(
