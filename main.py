@@ -122,10 +122,18 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
         raise ToolError(f"Upstream API returned malformed JSON for {endpoint}: {exc}") from exc
 
 
+def dataset_url(dataset_id) -> str:
+    """Public page of a dataset: the URL to cite for anything taken from it."""
+    return f"https://{DOMAIN}/explore/dataset/{dataset_id}/"
+
+
 def _to_str(value) -> str:
     if isinstance(value, list):
         return " ".join(str(v) for v in value)
     return str(value) if value else ""
+
+
+LIST_DESCRIPTION_CHARS = 400
 
 
 def _short(text: str, limit: int = LIST_DESCRIPTION_CHARS) -> str:
@@ -361,6 +369,7 @@ async def get_records(
 
     data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
     return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
+
 
 @mcp.tool(
     title="Get Facet Values",
