@@ -1,4 +1,6 @@
+import json
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -134,6 +136,7 @@ def _to_str(value) -> str:
 
 
 LIST_DESCRIPTION_CHARS = 400
+FIELD_DESCRIPTION_CHARS = 200
 
 
 def _short(text: str, limit: int = LIST_DESCRIPTION_CHARS) -> str:
@@ -163,14 +166,56 @@ def _escape_odsql(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _next_offset(offset: int, returned: int, total) -> int | None:
+    """Offset for the next page, or None when this page reached the end."""
+    if not returned:
+        return None
+    nxt = offset + returned
+    if isinstance(total, int) and nxt >= total:
+        return None
+    return nxt
+
+
+# Dataset title/modified for results that do not carry them (records, export).
+# Small in-memory cache so a records call costs at most one extra request.
+META_TTL_SECONDS = 3600
+_meta_cache: dict[str, tuple[float, dict]] = {}
+
+
+async def _dataset_meta(dataset_id: str) -> dict:
+    """{"title", "modified"} of a dataset from the catalog; {} if unavailable.
+    Never raises: citing metadata must not make a data call fail."""
+    key = dataset_id.strip()
+    cached = _meta_cache.get(key)
+    now = time.monotonic()
+    if cached and now - cached[0] < META_TTL_SECONDS:
+        return cached[1]
+    try:
+        data = await fetch(
+            "/catalog/datasets",
+            {
+                "select": "dataset_id, title, modified",
+                "where": f'dataset_id="{_escape_odsql(key)}"',
+                "limit": 1,
+            },
+        )
+        row = (data.get("results") or [{}])[0]
+        meta = {k: row[k] for k in ("title", "modified") if isinstance(row, dict) and row.get(k)}
+        meta = {k: _to_str(v) if k == "title" else v for k, v in meta.items()}
+    except (ToolError, AttributeError, IndexError, TypeError):
+        return {}
+    if meta:
+        _meta_cache[key] = (now, meta)
+    return meta
+
+
 @mcp.tool(
     title="Search Datasets",
     description=(
-        f"Search and list available open datasets from {DOMAIN}. Two modes: 'semantic' "
-        "(default) ranks the catalog by meaning using natural-language queries "
-        "(handles synonyms and other languages); 'lexical' does a classic full-text "
-        "match on the exact terms. Use semantic for conceptual discovery, lexical for "
-        "precise term/name lookups."
+        f"Search the {DOMAIN} dataset catalog; returns dataset_id, title, url, short description "
+        "and modified per hit, plus next_offset for paging. Use search_mode 'semantic' (default) "
+        "for topics and questions in any language, 'lexical' only for exact names or terms. "
+        "Next step: get_dataset(dataset_id) before querying records."
     ),
 )
 async def get_datasets(
@@ -185,40 +230,19 @@ async def get_datasets(
     include_app_metas: bool = False,
 ) -> dict:
     """
-    List available datasets from the configured catalog with optional filtering.
-
     Args:
-        limit: Number of items to return (default: 10, max: 100)
-        offset: Index of first item to return (default: 0)
-        search: Search string. Interpreted according to search_mode.
-        search_mode: "semantic" (default) ranks the whole catalog by meaning via
-            vector_similarity (best for natural-language/conceptual queries, also
-            matches synonyms and other languages); "lexical" filters by exact
-            full-text match. Ignored when search is empty.
-        refine: Facet filter to limit results (e.g., "publisher:Statistisches Amt")
-        exclude: Facet filter to exclude values (e.g., "modified:2019/12")
-        order_by: Field to sort results (e.g., "modified desc", "title asc").
-            Ignored in semantic mode, where results are ordered by relevance.
-        timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
-        include_app_metas: Include application metadata in response
-
-    Full-text notes (lexical mode and ODSQL search generally):
-        search("Hitze") tokenizes and also matches substrings/partial words, so
-        it may return tangential hits (e.g. "Hitzkirch" when looking for heat).
-        For precision, combine operators in `where` clauses (records) or here
-        with refine/exclude: quoted multi-word phrase search("öffentliche
-        Frage") matches the exact phrase; AND / OR / NOT combine terms, e.g.
-        search("Verkehr") AND NOT search("Tram"). Use get_facets to find exact
-        filterable values, and prefer refine over search when the exact term is
-        known.
-
-    Returns:
-        Dictionary with total_count and results array containing dataset metadata.
-        Note: in semantic mode the catalog is ranked rather than filtered, so
-        total_count reflects the whole catalog and the top results are the most
-        relevant.
+        limit: Hits per page (default 10, max 100).
+        offset: Start index; pass next_offset from the previous result to get the next page.
+        search: Query text. Empty lists the whole catalog.
+        search_mode: "semantic" (ranked by meaning; total_count is then the whole catalog) or
+            "lexical" (full-text filter; matches partial words, so use quoted phrases and AND/NOT).
+        refine: Exact facet filter, e.g. "publisher:Statistisches Amt" (values via get_facets).
+        exclude: Facet filter to exclude, same syntax as refine.
+        order_by: e.g. "modified desc". Ignored in semantic mode.
+        timezone: e.g. "Europe/Zurich".
+        include_app_metas: Include application metadata.
     """
-    params: dict[str, str | int] = {"limit": min(limit, 100), "offset": offset}
+    params: dict[str, str | int] = {"limit": max(1, min(limit, 100)), "offset": max(0, offset)}
     if refine:
         params["refine"] = refine
     if exclude:
@@ -239,32 +263,31 @@ async def get_datasets(
     elif order_by:
         params["order_by"] = order_by
     data = await fetch("/catalog/datasets", params)
+    results = [_simplify_dataset(d) for d in data.get("results", [])]
+    total = data.get("total_count")
     return {
-        "total_count": data.get("total_count"),
-        "results": [_simplify_dataset(d) for d in data.get("results", [])],
+        "total_count": total,
+        "next_offset": _next_offset(int(params["offset"]), len(results), total),
+        "results": results,
     }
 
 
 @mcp.tool(
     title="Get Dataset Metadata",
-    description="Get detailed metadata for a specific dataset including field definitions, schema, publisher info, and record count. Use this to understand a dataset's structure before querying records.",
+    description=(
+        "Get one dataset's title, url, full description, modified date, record count and its "
+        "fields (name, type, label, description, unit, sortable/facet flags). Always call this "
+        "before get_records: use the exact field names listed here, and note that year fields "
+        "are often type text."
+    ),
 )
 async def get_dataset(dataset_id: str) -> dict:
     """
-    Get detailed metadata for a specific dataset.
-
     Args:
-        dataset_id: The dataset identifier (e.g., "100113")
+        dataset_id: Dataset identifier, e.g. "100010" (from get_datasets).
 
-    Returns:
-        Dataset metadata including title, description, theme, keywords, etc.
-        Each field entry contains `name`, `type`, and capability flags from the
-        schema annotations: `sortable` (usable in order_by), `facet` (usable in
-        refine/exclude), plus `disjunctive`/`timerangeFilter` where declared.
-        Flags are absent when the annotation is missing — treat missing as
-        "not supported". Verify against the actual field list instead of
-        guessing in `where`/`order_by`, and prefer `refine` with an exact
-        facet value over a full-text search when the value is known.
+    Field flags: `sortable` = usable in order_by, `facet` = usable in refine/exclude;
+    a missing flag means not supported.
     """
     data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}")
     metas = data.get("metas", {})
@@ -272,6 +295,12 @@ async def get_dataset(dataset_id: str) -> dict:
     for f in data.get("fields", []):
         caps = f.get("annotations", {}) or {}
         entry: dict = {"name": f.get("name"), "type": f.get("type")}
+        if f.get("label") and f.get("label") != f.get("name"):
+            entry["label"] = f["label"]
+        if f.get("description"):
+            entry["description"] = _short(_to_str(f["description"]), FIELD_DESCRIPTION_CHARS)
+        if caps.get("unit"):
+            entry["unit"] = _to_str(caps["unit"])
         if caps.get("sortable"):
             entry["sortable"] = True
         if caps.get("facet"):
@@ -296,9 +325,31 @@ async def get_dataset(dataset_id: str) -> dict:
     }
 
 
+MAX_RESULT_CHARS = 12000
+
+
+def _cap_rows(rows: list, budget: int) -> tuple[list, bool]:
+    """Longest prefix of rows whose JSON stays within budget characters (at least one row)."""
+    kept: list = []
+    used = 2
+    for row in rows:
+        size = len(json.dumps(row, ensure_ascii=False, default=str)) + 2
+        if kept and used + size > budget:
+            return kept, True
+        kept.append(row)
+        used += size
+    return kept, False
+
+
 @mcp.tool(
     title="Query Dataset Records",
-    description="Query and filter records from a dataset using ODSQL syntax. Use this to retrieve actual data from a dataset with optional WHERE clauses, ordering, and pagination.",
+    description=(
+        "Query rows of a dataset with ODSQL; returns dataset_id, url, title, modified (cite these), "
+        "total_count, next_offset and results. Call get_dataset first for exact field names. "
+        'Year fields are often text: use group_by/order_by or `in ("2020","2021")`, not >=. '
+        "For totals use select with sum()/count() plus group_by instead of fetching many rows; "
+        "output is capped at about 12000 characters (truncated=true)."
+    ),
 )
 async def get_records(
     dataset_id: str,
@@ -315,39 +366,25 @@ async def get_records(
     include_links: bool = False,
 ) -> dict:
     """
-    Query records from a dataset with ODSQL filtering.
-
     Args:
-        dataset_id: The dataset identifier (e.g., "100113")
-        select: Select expression to add/remove/change fields (e.g., "size", "size * 2 as bigger_size", "*")
-        where: ODSQL WHERE clause (e.g., "pm25 > 10", "time >= '2020-01-01'")
-        group_by: Grouping expression for aggregations (e.g., "city_field as city")
-        order_by: Field to order results by (e.g., "time DESC", "pm25 ASC")
-        limit: Number of items to return (default: 10, max: 100, or 20000 with group_by)
-        offset: Index of first item to return (default: 0)
-        refine: Facet filter to limit results (e.g., "city:Paris")
-        exclude: Facet filter to exclude values (e.g., "modified:2019/12")
-        lang: Language for formatting (e.g., "en", "de", "fr")
-        timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
-        include_links: Include HATEOAS links in response
-
-    ODSQL search notes for `where`:
-        search("Hitze") tokenizes and also matches substrings/partial words, so
-        it can return tangential hits (e.g. "Hitzkirch" when looking for heat).
-        For precision:
-        - Phrase search: search("öffentliche Frage") matches the exact phrase.
-        - Boolean combos: AND, OR, NOT — e.g. search("Verkehr") AND NOT
-          search("Tram").
-        - Field comparison: field = "value" (exact), field LIKE "pattern" with
-          % wildcards, e.g. titel_ges LIKE "Verkehr%" (case-insensitive); this
-          is the precise alternative to substring-matching search().
-        - Facet fields (see get_dataset, flag `facet: true`) are fastest via
-          refine/exclude with their exact values (get_facets lists them).
-
-    Returns:
-        Dictionary with total_count and results array containing record data
+        dataset_id: Dataset identifier, e.g. "100010".
+        select: Fields or expressions, e.g. "jahr, sum(total) as leer" or "*".
+        where: ODSQL filter, e.g. `jahr in ("2022","2023")`, `name like "Basel%"`,
+            `search("Hitze")`. Combine with AND/OR/NOT. Strings in double quotes.
+        group_by: Grouping for aggregations, e.g. "jahr". Needs aggregates in select.
+        order_by: e.g. "jahr desc".
+        limit: Rows per page (default 10, max 100; up to 20000 with group_by).
+        offset: Start row; use next_offset from the previous result to page.
+        refine: Exact facet filter, e.g. "wohnviertel:Altstadt".
+        exclude: Facet filter to exclude.
+        lang: Formatting language: "de", "en", "fr".
+        timezone: e.g. "Europe/Zurich".
+        include_links: Include HATEOAS links.
     """
-    params: dict[str, str | int] = {"limit": min(limit, 20000), "offset": offset}
+    params: dict[str, str | int] = {
+        "limit": max(1, min(limit, 20000)),
+        "offset": max(0, offset),
+    }
     if select:
         params["select"] = select
     if where:
@@ -368,23 +405,48 @@ async def get_records(
         params["include_links"] = "true"
 
     data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
-    return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
+    meta = await _dataset_meta(dataset_id)
+    head: dict = {"dataset_id": dataset_id.strip(), "url": dataset_url(dataset_id.strip())}
+    head.update(meta)
+    rows = data.get("results")
+    if not isinstance(rows, list):
+        return {**head, **data}
+    rest = {k: v for k, v in data.items() if k != "results"}
+    head.update(rest)
+    overhead = len(json.dumps(head, ensure_ascii=False, default=str)) + 200
+    kept, truncated = _cap_rows(rows, max(MAX_RESULT_CHARS - overhead, 1000))
+    total = data.get("total_count")
+    head["next_offset"] = _next_offset(int(params["offset"]), len(kept), total)
+    if head["next_offset"] is None and len(kept) == len(rows) == params["limit"] and total is None:
+        head["next_offset"] = int(params["offset"]) + len(kept)
+    head["results"] = kept
+    if truncated:
+        head["truncated"] = True
+        head["hint"] = (
+            f"Output cut to {len(kept)} of {len(rows)} rows (about {MAX_RESULT_CHARS} characters). "
+            "Use select to return fewer fields, group_by with aggregates, a smaller limit, "
+            "or next_offset to page."
+        )
+    return head
+
+
+FACET_VALUES_ALL = 30
+FACET_VALUES_ONE = 100
 
 
 @mcp.tool(
     title="Get Facet Values",
-    description="Get available filter values for categorizing datasets. Useful for discovering publishers, keywords, themes, or other facets to refine dataset searches.",
+    description=(
+        "List catalog filter values (publisher, theme, keyword, features, modified, language) "
+        "with counts, to build an exact `refine` filter for get_datasets. Pass one facet name; "
+        "without it every facet is returned, capped at 30 values each."
+    ),
 )
 async def get_facets(facet: str | None = None) -> dict:
     """
-    Get available facet values for filtering datasets.
-
     Args:
-        facet: Specific facet to retrieve: "publisher", "keyword", "theme", "features", "modified", "language"
-               If None, returns all facets
-
-    Returns:
-        Dictionary with facet name and array of values with counts
+        facet: "publisher", "keyword", "theme", "features", "modified" or "language".
+            Omit for a capped overview of all facets.
     """
     params: dict[str, str | int] = {}
     if facet:
@@ -393,12 +455,27 @@ async def get_facets(facet: str | None = None) -> dict:
     facets = data.get("facets") if isinstance(data, dict) else None
     if not isinstance(facets, list):
         return data
+
+    def capped(values, cap: int) -> dict:
+        values = values if isinstance(values, list) else []
+        out: dict = {"total_values": len(values), "values": values[:cap]}
+        if len(values) > cap:
+            out["truncated"] = True
+        return out
+
     if facet:
         for f in facets:
             if isinstance(f, dict) and f.get("name") == facet:
-                values = f.get("facets", [])
-                return {"facet": facet, "values": values if isinstance(values, list) else []}
-    return data
+                return {"facet": facet, **capped(f.get("facets", []), FACET_VALUES_ONE)}
+        return data
+    return {
+        "facets": [
+            {"name": f.get("name"), **capped(f.get("facets", []), FACET_VALUES_ALL)}
+            for f in facets
+            if isinstance(f, dict)
+        ],
+        "hint": f"Max {FACET_VALUES_ALL} values per facet; pass facet=<name> for up to {FACET_VALUES_ONE}.",
+    }
 
 
 EXPORT_FORMATS = (
@@ -420,23 +497,26 @@ EXPORT_FORMATS = (
 
 @mcp.tool(
     title="Get Export URL",
-    description="Generate a download URL for exporting a dataset in various formats (CSV, JSON, GeoJSON, XLSX, Shapefile, Parquet, etc.). Use this when you need to download or share dataset exports.",
+    description=(
+        "Build a download link for a whole dataset (csv, json, geojson, xlsx, parquet, ...), "
+        "optionally filtered by an ODSQL where. Returns download_url plus the dataset page url "
+        "and title to cite. Does not return data itself; use get_records to read values."
+    ),
 )
 async def export_dataset_url(
     dataset_id: str,
     format: str = "json",
     where: str | None = None,
-) -> str:
+) -> dict:
     """
-    Get the export URL for downloading a dataset in various formats.
-
     Args:
-        dataset_id: The dataset identifier (e.g., "100113")
-        format: Export format: csv, json, geojson, xlsx, shp, parquet, gpx, kml, rdfxml, jsonld, turtle
-        where: Optional ODSQL WHERE clause to filter exported records
+        dataset_id: Dataset identifier, e.g. "100113".
+        format: csv, json, geojson, xlsx, tsv, ods, shp, parquet, gpx, kml, rdfxml, jsonld, turtle.
+        where: Optional ODSQL filter for the exported records.
 
     Returns:
-        Full URL to download the exported dataset
+        {"download_url", "format", "dataset_id", "url", "title"?, "modified"?}.
+        (Before this version the tool returned the download URL as a plain string.)
     """
     normalized_format = format.strip().lower()
     if normalized_format not in EXPORT_FORMATS:
@@ -449,7 +529,14 @@ async def export_dataset_url(
         # commune="La Hulpe" and year>=2020): percent-encode so the URL is valid
         # and the clause reaches the API intact.
         url += f"?where={quote(where, safe='')}"
-    return url
+    meta = await _dataset_meta(dataset_id)
+    return {
+        "download_url": url,
+        "format": normalized_format,
+        "dataset_id": dataset_id.strip(),
+        "url": dataset_url(dataset_id.strip()),
+        **meta,
+    }
 
 
 def _healthz(request) -> JSONResponse:
