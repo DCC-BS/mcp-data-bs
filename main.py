@@ -445,6 +445,9 @@ async def export_dataset_url(
         )
     url = f"{BASE_URL}/catalog/datasets/{quote(dataset_id.strip(), safe='')}/exports/{normalized_format}"
     if where:
+        # ODSQL clauses routinely contain spaces, quotes, "=" and "&" (e.g.
+        # commune="La Hulpe" and year>=2020): percent-encode so the URL is valid
+        # and the clause reaches the API intact.
         url += f"?where={quote(where, safe='')}"
     return url
 
