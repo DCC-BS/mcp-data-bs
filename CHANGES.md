@@ -1,5 +1,21 @@
 # Änderungsübersicht — mcp-data-bs
 
+## Branch `feat/agent-friendly-results` (09.10.2026, unkommittiert)
+
+Anlass: Auswertung des Deep-Research-Agenten (deep-research-evaluation, Focus-Engine). Gemma-4-31B
+scheiterte an `get_records`, weil der Server nur „Error executing tool get_records“ meldete.
+
+| Änderung | Warum |
+|---|---|
+| API-Fehler als `ToolError` mit der Meldung des Portals (z. B. `IncompatibleTypesInComparisonFilter: …`), Timeouts und Netzfehler ebenso | Das Modell sieht den Grund und korrigiert die Abfrage selbst. Andere Exceptions erreichen den Client nur als „Error executing tool …“. |
+| `url` (Datensatzseite `https://data.bs.ch/explore/dataset/<id>/`) in `get_datasets`, `get_dataset`, `get_records`; `dataset_id` in `get_records` | Zitierbare, öffentliche Quelle pro Ergebnis statt MCP-Endpunkt |
+| Beschreibung in Trefferlisten auf 400 Zeichen gekürzt (`get_dataset` liefert sie ganz) | 8 Treffer brauchten 7'500 Zeichen, meist Beschreibung |
+| Docstring `get_records`: Jahresfelder sind oft Text, `jahr >= '2016'` schlägt fehl | Häufigster Fehler des Agenten |
+
+Tests: 2 neue (`test_results_carry_dataset_url`, `test_api_error_message_reaches_the_model`).
+
+---
+
 Stand: 08.10.2026 · Basis: `c465b1f` (Merge branch `feat/hostable-mcp-and-skills`)
 Alle Änderungen liegen **unkommitted** im Working Directory.
 

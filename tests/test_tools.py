@@ -80,3 +80,51 @@ async def test_get_dataset_simplifies_fields(mock_fetch):
         {"name": "c", "type": "date", "timerange_filter": True},
         {"name": "d", "type": "text"},
     ]
+
+
+@pytest.mark.anyio
+async def test_results_carry_dataset_url(mock_fetch):
+    import main
+
+    mock_fetch(
+        {
+            "total_count": 1,
+            "results": [
+                {
+                    "dataset_id": "100010",
+                    "metas": {"default": {"title": "x", "description": "d " * 400}},
+                }
+            ],
+        }
+    )
+    found = await main.get_datasets(search="leer")
+    assert found["results"][0]["url"] == f"https://{main.DOMAIN}/explore/dataset/100010/"
+    assert len(found["results"][0]["description"]) <= main.LIST_DESCRIPTION_CHARS + 2
+
+    mock_fetch({"total_count": 0, "results": []})
+    records = await main.get_records(dataset_id="100010")
+    assert records["url"].endswith("/explore/dataset/100010/") and records["dataset_id"] == "100010"
+
+
+@pytest.mark.anyio
+async def test_api_error_message_reaches_the_model(monkeypatch):
+    import httpx
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    import main
+
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "error_code": "IncompatibleTypesInComparisonFilter",
+                "message": "Incompatible types in comparison filter.",
+            },
+        )
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        main.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
+    )
+    with pytest.raises(ToolError, match="IncompatibleTypesInComparisonFilter"):
+        await main.get_records(dataset_id="100010", where="jahr >= '2016'")
