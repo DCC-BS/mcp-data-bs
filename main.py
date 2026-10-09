@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -98,29 +99,27 @@ async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> di
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
             response = await client.get(endpoint, params=params)
     except httpx.TimeoutException as exc:
-        raise ToolError(
-            f"{DOMAIN} did not answer within 30 s; narrow the query (limit, where, select)"
-        ) from exc
+        raise ToolError(f"Upstream API timed out after 30s while requesting {endpoint}.") from exc
     except httpx.HTTPError as exc:
-        raise ToolError(f"{DOMAIN} is not reachable: {type(exc).__name__}") from exc
+        raise ToolError(
+            f"Could not reach the upstream API while requesting {endpoint}: {exc}"
+        ) from exc
+
     if response.status_code >= 400:
+        body = None
         try:
             body = response.json()
-            detail = f"{body.get('error_code', '')}: {body.get('message', '')}".strip(": ")
         except ValueError:
-            detail = response.text[:300]
+            pass
+        detail = body.get("message", "") if isinstance(body, dict) else ""
         raise ToolError(
-            f"{DOMAIN} answered {response.status_code}: {detail or response.reason_phrase}"
+            f"Upstream API returned {response.status_code} for {endpoint}: {detail or response.reason_phrase}"
         )
-    return response.json()
 
-
-def dataset_url(dataset_id) -> str:
-    """Public page of a dataset: the URL to cite for anything taken from it."""
-    return f"https://{DOMAIN}/explore/dataset/{dataset_id}/"
-
-
-LIST_DESCRIPTION_CHARS = 400
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise ToolError(f"Upstream API returned malformed JSON for {endpoint}: {exc}") from exc
 
 
 def _to_str(value) -> str:
@@ -259,7 +258,7 @@ async def get_dataset(dataset_id: str) -> dict:
         guessing in `where`/`order_by`, and prefer `refine` with an exact
         facet value over a full-text search when the value is known.
     """
-    data = await fetch(f"/catalog/datasets/{dataset_id}")
+    data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}")
     metas = data.get("metas", {})
     annotations: list[dict] = []
     for f in data.get("fields", []):
@@ -359,9 +358,9 @@ async def get_records(
         params["timezone"] = timezone
     if include_links:
         params["include_links"] = "true"
-    data = await fetch(f"/catalog/datasets/{dataset_id}/records", params)
-    return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
 
+    data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
+    return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
 
 @mcp.tool(
     title="Get Facet Values",
@@ -382,11 +381,32 @@ async def get_facets(facet: str | None = None) -> dict:
     if facet:
         params["facet"] = facet
     data = await fetch("/catalog/facets", params)
-    if facet and "facets" in data:
-        for f in data["facets"]:
-            if f["name"] == facet:
-                return {"facet": facet, "values": f.get("facets", [])}
+    facets = data.get("facets") if isinstance(data, dict) else None
+    if not isinstance(facets, list):
+        return data
+    if facet:
+        for f in facets:
+            if isinstance(f, dict) and f.get("name") == facet:
+                values = f.get("facets", [])
+                return {"facet": facet, "values": values if isinstance(values, list) else []}
     return data
+
+
+EXPORT_FORMATS = (
+    "csv",
+    "json",
+    "geojson",
+    "xlsx",
+    "tsv",
+    "ods",
+    "shp",
+    "parquet",
+    "gpx",
+    "kml",
+    "rdfxml",
+    "jsonld",
+    "turtle",
+)
 
 
 @mcp.tool(
@@ -409,9 +429,14 @@ async def export_dataset_url(
     Returns:
         Full URL to download the exported dataset
     """
-    url = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
+    normalized_format = format.strip().lower()
+    if normalized_format not in EXPORT_FORMATS:
+        raise ToolError(
+            f"Unsupported export format {format!r}. Supported: {', '.join(EXPORT_FORMATS)}"
+        )
+    url = f"{BASE_URL}/catalog/datasets/{quote(dataset_id.strip(), safe='')}/exports/{normalized_format}"
     if where:
-        url += f"?where={where}"
+        url += f"?where={quote(where, safe='')}"
     return url
 
 
