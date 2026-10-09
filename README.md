@@ -67,12 +67,38 @@ different portal.
 Deploy as a container. The image is built against the DCC shared base image
 (`ghcr.io/dcc-bs/dcc-docker-images/mise:13-slim`); see `Dockerfile`.
 
+The MCP endpoint is mounted at `/mcp` (streamable HTTP).
+
 ```bash
 docker build -f Dockerfile -t mcp-data-bs .
 docker run --rm -p 8000:8000 -e DATA_PORTAL_DOMAIN=data.bs.ch mcp-data-bs
 ```
 
 Healthcheck: `GET /healthz -> {"status":"ok"}`.
+
+### API reference
+
+The HTTP server exposes an OpenAPI description of the MCP endpoint with a
+rendered Swagger UI:
+
+- `GET /docs` — interactive reference (Swagger UI). Each tool appears as a
+  `tools/call` request schema with a working example you can execute against
+  the server via *Try it out*.
+- `GET /openapi.json` — the raw OpenAPI 3.1 spec.
+
+The spec is generated from the live MCP tool registry at request time, so new
+tools appear automatically. It covers all endpoints (`POST /mcp`, `GET /healthz`,
+`GET /`). Responses are `text/event-stream`; each `data:` frame carries a
+JSON-RPC message. The server is stateless — requests need no `initialize`
+handshake and no session id.
+
+Client compatibility: POST requests with incomplete `Accept` headers (e.g. only
+`application/json` or `*/*`) are rewritten to
+`application/json, text/event-stream` by a middleware before the transport
+validates them, so plain JSON-RPC clients work unmodified. `GET /` returns a
+JSON status page (server, transport, endpoint links) instead of holding an SSE
+connection open — clients expecting a traditional SSE handshake get an
+immediate, meaningful response.
 
 > **Remote hosting requires `MCP_ALLOWED_HOSTS`.** The MCP HTTP endpoint has
 > DNS-rebinding protection on by default and, without config, accepts only
@@ -98,17 +124,42 @@ This repo uses the DCC reusable workflows ([ci-workflows](https://github.com/DCC
 
 ## Connecting clients
 
-### ChatGPT (developer-mode connector)
+The snippets below are self-contained: stdio clients launch the server from
+GitHub via `uvx` (needs [uv](https://docs.astral.sh/uv/) installed), HTTP
+clients point at the hosted deployment. Set `DATA_PORTAL_DOMAIN` to another
+portal domain to target a different catalog.
 
-Add a custom connector pointing at the hosted HTTP URL (e.g.
-`https://mcp.your-domain`), no auth. All five tools are exposed and usable.
+**Antigravity CLI (`agy`)** — one command:
 
-### OpenWebUI
+```bash
+agy mcp add --env DATA_PORTAL_DOMAIN=data.bs.ch databs -- \
+  uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+```
 
-Recent OpenWebUI versions support MCP over streamable HTTP natively:
-Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain`).
+**Claude Desktop / Cursor** — add to `claude_desktop_config.json`
+(Claude Desktop → Settings → Developer → Edit Config) or `~/.cursor/mcp.json`:
 
-### Local stdio clients
+```json
+{
+  "mcpServers": {
+    "data-bs": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/DCC-BS/mcp-data-bs", "data-bs-mcp"],
+      "env": { "DATA_PORTAL_DOMAIN": "data.bs.ch" }
+    }
+  }
+}
+```
+
+**OpenWebUI / ChatGPT** — point at the streamable HTTP endpoint
+`https://mcp.data.bs.ch/mcp` (no auth):
+
+- OpenWebUI: Settings → Tools → add `https://mcp.data.bs.ch/mcp`
+- ChatGPT (developer-mode connector): Settings → Connectors → Create → add
+  `https://mcp.data.bs.ch/mcp`; all five tools are exposed and usable, and the
+  interactive API reference lives at `https://mcp.data.bs.ch/docs`.
+
+### Other clients
 
 - **opencode**: add to OpenCode config:
   ```json
@@ -124,7 +175,8 @@ Settings → Tools → add the hosted URL (e.g. `https://mcp.your-domain`).
 - **uvx** (anywhere): set `DATA_PORTAL_DOMAIN` in your environment first (the
   `.env` is no longer committed). `uvx` runs the same code as a local checkout.
   ```bash
-  uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
+  DATA_PORTAL_DOMAIN=data.bs.ch \
+    uvx --from git+https://github.com/DCC-BS/mcp-data-bs data-bs-mcp
   ```
 
 ## Skills (no MCP needed)

@@ -1,12 +1,16 @@
 import os
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
+
+import api_docs
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -60,25 +64,80 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
-mcp = FastMCP(
-    DOMAIN,
-    stateless_http=True,
-    streamable_http_path="/",
-    transport_security=_transport_security(),
-)
+class RelaxedAcceptHeaderMiddleware(BaseHTTPMiddleware):
+    """Tolerate JSON-RPC clients that send incomplete Accept headers.
+
+    The streamable HTTP transport rejects POST requests without an Accept
+    header listing both application/json and text/event-stream (406), which
+    plain JSON-RPC clients routinely omit. Rewrite those Accept headers to
+    what the transport requires before the request reaches it."""
+
+    async def dispatch(self, request, call_next):
+        if request.method == "POST":
+            accept = request.headers.get("accept", "")
+            if "text/event-stream" not in accept or "application/json" not in accept:
+                request.scope["headers"] = [
+                    (k, v) for k, v in request.scope["headers"] if k.lower() != b"accept"
+                ] + [(b"accept", b"application/json, text/event-stream")]
+        return await call_next(request)
+
+
+mcp = MCPServer(DOMAIN)
+
+MCP_HTTP_SETTINGS = {
+    "streamable_http_path": "/mcp",
+    "stateless_http": True,
+    "transport_security": _transport_security(),
+}
 
 
 async def fetch(endpoint: str, params: dict[str, str | int] | None = None) -> dict:
-    async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
-        response = await client.get(endpoint, params=params)
-        response.raise_for_status()
+    """GET from the Explore API. API errors are raised as ToolError with the portal's own message
+    (e.g. "Incompatible types in comparison filter ... where"), so the calling model can fix its query;
+    any other exception would reach the client only as "Error executing tool <name>"."""
+    try:
+        async with httpx.AsyncClient(base_url=BASE_URL, timeout=30.0) as client:
+            response = await client.get(endpoint, params=params)
+    except httpx.TimeoutException as exc:
+        raise ToolError(f"Upstream API timed out after 30s while requesting {endpoint}.") from exc
+    except httpx.HTTPError as exc:
+        raise ToolError(
+            f"Could not reach the upstream API while requesting {endpoint}: {exc}"
+        ) from exc
+
+    if response.status_code >= 400:
+        body = None
+        try:
+            body = response.json()
+        except ValueError:
+            pass
+        detail = body.get("message", "") if isinstance(body, dict) else ""
+        raise ToolError(
+            f"Upstream API returned {response.status_code} for {endpoint}: {detail or response.reason_phrase}"
+        )
+
+    try:
         return response.json()
+    except ValueError as exc:
+        raise ToolError(f"Upstream API returned malformed JSON for {endpoint}: {exc}") from exc
+
+
+def dataset_url(dataset_id) -> str:
+    """Public page of a dataset: the URL to cite for anything taken from it."""
+    return f"https://{DOMAIN}/explore/dataset/{dataset_id}/"
 
 
 def _to_str(value) -> str:
     if isinstance(value, list):
         return " ".join(str(v) for v in value)
     return str(value) if value else ""
+
+
+LIST_DESCRIPTION_CHARS = 400
+
+
+def _short(text: str, limit: int = LIST_DESCRIPTION_CHARS) -> str:
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
 def _simplify_dataset(data: dict) -> dict:
@@ -88,7 +147,9 @@ def _simplify_dataset(data: dict) -> dict:
     return {
         "dataset_id": data.get("dataset_id"),
         "title": _to_str(default.get("title")),
-        "description": _to_str(default.get("description")),
+        "url": dataset_url(data.get("dataset_id")),
+        # list results: the start of the description; get_dataset returns all of it
+        "description": _short(_to_str(default.get("description"))),
         "theme": _to_str(default.get("theme")),
         "keyword": default.get("keyword", []) or [],
         "publisher": _to_str(default.get("publisher")),
@@ -141,6 +202,16 @@ async def get_datasets(
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_app_metas: Include application metadata in response
 
+    Full-text notes (lexical mode and ODSQL search generally):
+        search("Hitze") tokenizes and also matches substrings/partial words, so
+        it may return tangential hits (e.g. "Hitzkirch" when looking for heat).
+        For precision, combine operators in `where` clauses (records) or here
+        with refine/exclude: quoted multi-word phrase search("öffentliche
+        Frage") matches the exact phrase; AND / OR / NOT combine terms, e.g.
+        search("Verkehr") AND NOT search("Tram"). Use get_facets to find exact
+        filterable values, and prefer refine over search when the exact term is
+        known.
+
     Returns:
         Dictionary with total_count and results array containing dataset metadata.
         Note: in semantic mode the catalog is ranked rather than filtered, so
@@ -187,12 +258,33 @@ async def get_dataset(dataset_id: str) -> dict:
 
     Returns:
         Dataset metadata including title, description, theme, keywords, etc.
+        Each field entry contains `name`, `type`, and capability flags from the
+        schema annotations: `sortable` (usable in order_by), `facet` (usable in
+        refine/exclude), plus `disjunctive`/`timerangeFilter` where declared.
+        Flags are absent when the annotation is missing — treat missing as
+        "not supported". Verify against the actual field list instead of
+        guessing in `where`/`order_by`, and prefer `refine` with an exact
+        facet value over a full-text search when the value is known.
     """
-    data = await fetch(f"/catalog/datasets/{dataset_id}")
+    data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}")
     metas = data.get("metas", {})
+    annotations: list[dict] = []
+    for f in data.get("fields", []):
+        caps = f.get("annotations", {}) or {}
+        entry: dict = {"name": f.get("name"), "type": f.get("type")}
+        if caps.get("sortable"):
+            entry["sortable"] = True
+        if caps.get("facet"):
+            entry["facet"] = True
+        if caps.get("disjunctive"):
+            entry["disjunctive"] = True
+        if caps.get("timerangeFilter"):
+            entry["timerange_filter"] = True
+        annotations.append(entry)
     return {
         "dataset_id": data.get("dataset_id"),
         "title": metas.get("default", {}).get("title"),
+        "url": dataset_url(data.get("dataset_id")),
         "description": metas.get("default", {}).get("description"),
         "theme": metas.get("default", {}).get("theme"),
         "keyword": metas.get("default", {}).get("keyword", []),
@@ -200,7 +292,7 @@ async def get_dataset(dataset_id: str) -> dict:
         "modified": metas.get("default", {}).get("modified"),
         "language": metas.get("default", {}).get("language", []),
         "records_count": data.get("metas", {}).get("explore", {}).get("records_count"),
-        "fields": [{"name": f.get("name"), "type": f.get("type")} for f in data.get("fields", [])],
+        "fields": annotations,
     }
 
 
@@ -239,6 +331,19 @@ async def get_records(
         timezone: Timezone for datetime fields (e.g., "Europe/Zurich")
         include_links: Include HATEOAS links in response
 
+    ODSQL search notes for `where`:
+        search("Hitze") tokenizes and also matches substrings/partial words, so
+        it can return tangential hits (e.g. "Hitzkirch" when looking for heat).
+        For precision:
+        - Phrase search: search("öffentliche Frage") matches the exact phrase.
+        - Boolean combos: AND, OR, NOT — e.g. search("Verkehr") AND NOT
+          search("Tram").
+        - Field comparison: field = "value" (exact), field LIKE "pattern" with
+          % wildcards, e.g. titel_ges LIKE "Verkehr%" (case-insensitive); this
+          is the precise alternative to substring-matching search().
+        - Facet fields (see get_dataset, flag `facet: true`) are fastest via
+          refine/exclude with their exact values (get_facets lists them).
+
     Returns:
         Dictionary with total_count and results array containing record data
     """
@@ -261,7 +366,9 @@ async def get_records(
         params["timezone"] = timezone
     if include_links:
         params["include_links"] = "true"
-    return await fetch(f"/catalog/datasets/{dataset_id}/records", params)
+
+    data = await fetch(f"/catalog/datasets/{quote(dataset_id.strip(), safe='')}/records", params)
+    return {"dataset_id": dataset_id, "url": dataset_url(dataset_id), **data}
 
 
 @mcp.tool(
@@ -283,11 +390,32 @@ async def get_facets(facet: str | None = None) -> dict:
     if facet:
         params["facet"] = facet
     data = await fetch("/catalog/facets", params)
-    if facet and "facets" in data:
-        for f in data["facets"]:
-            if f["name"] == facet:
-                return {"facet": facet, "values": f.get("facets", [])}
+    facets = data.get("facets") if isinstance(data, dict) else None
+    if not isinstance(facets, list):
+        return data
+    if facet:
+        for f in facets:
+            if isinstance(f, dict) and f.get("name") == facet:
+                values = f.get("facets", [])
+                return {"facet": facet, "values": values if isinstance(values, list) else []}
     return data
+
+
+EXPORT_FORMATS = (
+    "csv",
+    "json",
+    "geojson",
+    "xlsx",
+    "tsv",
+    "ods",
+    "shp",
+    "parquet",
+    "gpx",
+    "kml",
+    "rdfxml",
+    "jsonld",
+    "turtle",
+)
 
 
 @mcp.tool(
@@ -310,12 +438,17 @@ async def export_dataset_url(
     Returns:
         Full URL to download the exported dataset
     """
-    url = f"{BASE_URL}/catalog/datasets/{dataset_id}/exports/{format}"
+    normalized_format = format.strip().lower()
+    if normalized_format not in EXPORT_FORMATS:
+        raise ToolError(
+            f"Unsupported export format {format!r}. Supported: {', '.join(EXPORT_FORMATS)}"
+        )
+    url = f"{BASE_URL}/catalog/datasets/{quote(dataset_id.strip(), safe='')}/exports/{normalized_format}"
     if where:
         # ODSQL clauses routinely contain spaces, quotes, "=" and "&" (e.g.
         # commune="La Hulpe" and year>=2020): percent-encode so the URL is valid
         # and the clause reaches the API intact.
-        url += "?" + urlencode({"where": where}, quote_via=quote)
+        url += f"?where={quote(where, safe='')}"
     return url
 
 
@@ -323,11 +456,39 @@ def _healthz(request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+def _index(request) -> JSONResponse:
+    return JSONResponse(
+        {
+            "server": DOMAIN,
+            "status": "ok",
+            "transport": "mcp-streamable-http",
+            "endpoints": {
+                "mcp": "/mcp",
+                "health": "/healthz",
+                "openapi": "/openapi.json",
+                "docs": "/docs",
+            },
+        }
+    )
+
+
+def _openapi(request) -> JSONResponse:
+    return JSONResponse(api_docs.build_openapi(DOMAIN, mcp._tool_manager.list_tools()))
+
+
+def _docs(request) -> HTMLResponse:
+    return HTMLResponse(api_docs.docs_page(DOMAIN))
+
+
 def create_http_app():
     """Build a fresh ASGI app. Call once per process; tests create one per case
     because the underlying session manager may run only once per instance."""
-    app = mcp.streamable_http_app()
+    app = mcp.streamable_http_app(**MCP_HTTP_SETTINGS)
+    app.add_middleware(RelaxedAcceptHeaderMiddleware)
+    app.router.routes.insert(0, Route("/", _index))
     app.router.routes.insert(0, Route("/healthz", _healthz))
+    app.router.routes.insert(0, Route("/openapi.json", _openapi))
+    app.router.routes.insert(0, Route("/docs", _docs))
     return app
 
 
