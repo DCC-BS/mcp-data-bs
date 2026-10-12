@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("DATA_PORTAL_DOMAIN", "test-domain")
+
 import pytest
 
 

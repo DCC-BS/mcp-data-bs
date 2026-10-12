@@ -229,7 +229,7 @@ async def test_export_url_without_where_has_no_query(mock_fetch):
     result = await main.export_dataset_url("100113", format="geojson")
 
     assert result["download_url"] == f"{main.BASE_URL}/catalog/datasets/100113/exports/geojson"
-    assert result["url"] == "https://data.bs.ch/explore/dataset/100113/"
+    assert result["url"] == f"https://{main.DOMAIN}/explore/dataset/100113/"
 
 
 @pytest.mark.anyio
@@ -286,7 +286,7 @@ async def test_get_records_is_citable(monkeypatch):
     result = await main.get_records("100010")
 
     assert result["dataset_id"] == "100010"
-    assert result["url"] == "https://data.bs.ch/explore/dataset/100010/"
+    assert result["url"] == f"https://{main.DOMAIN}/explore/dataset/100010/"
     assert result["title"] == "Leerstehende Wohnungen"
     assert result["modified"] == "2026-08-21"
     assert result["results"] == [{"jahr": "2024"}]
@@ -481,7 +481,7 @@ async def test_export_returns_citation(monkeypatch):
     assert result["format"] == "csv"
     assert result["download_url"].endswith("/100010/exports/csv")
     assert result["title"] == "Leerstehende Wohnungen"
-    assert result["url"] == "https://data.bs.ch/explore/dataset/100010/"
+    assert result["url"] == f"https://{main.DOMAIN}/explore/dataset/100010/"
 
 
 def test_tool_descriptions_are_short():
