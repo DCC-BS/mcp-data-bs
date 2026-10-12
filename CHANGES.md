@@ -1,5 +1,23 @@
 # Änderungsübersicht — mcp-data-bs
 
+## Branch `feat/agent-citable-results` (09.10.2026)
+
+Anlass: Der Deep-Research-Agent macht jedes Ergebnis mit URL-Feld zur zitierbaren Quelle (Titel aus `title`, Datum aus `modified`). Ergebnisse von `get_records` hatten keinen Titel und kein Datum, grosse Antworten sprengten das Kontextfenster von Gemma-4-31B.
+
+| Änderung | Warum |
+|---|---|
+| `get_records` liefert `dataset_id`, `url`, `title`, `modified` auf oberster Ebene; Titel/Stand aus dem Katalog (ein zusätzlicher, schlanker Request, 1 h In-Memory-Cache); Fehler beim Lookup lassen den Aufruf nicht scheitern (dann fehlen `title`/`modified`) | Jedes Ergebnis ist allein zitierbar |
+| `export_dataset_url` gibt jetzt ein Objekt zurück: `download_url`, `format`, `dataset_id`, `url`, `title`, `modified` (**nicht abwärtskompatibel**: vorher reiner String) | Export-Link mit Datensatzseite zum Zitieren |
+| `get_dataset`: Felder mit `label`, `description` (max. 200 Zeichen) und `unit` (falls das Portal eine Einheit liefert, z. B. `μg/m3`) | Das Modell wählt Felder und Aggregationen korrekt |
+| `next_offset` in `get_datasets` und `get_records` (null = letzte Seite) | Modell kann sauber blättern |
+| `get_records`: Zeilen auf ca. 12'000 Zeichen begrenzt, `truncated: true` plus `hint` (select/group_by/limit) | Kontext des Modells schonen |
+| `get_facets` ohne Namen: max. 30 Werte pro Facet, `total_values` angegeben; mit Namen max. 100 | Kein Dump aller Facetten |
+| Tool-Beschreibungen neu: 1–3 Sätze, Hinweise: erst `get_dataset`, Jahresfelder oft Text (`group_by`/`order_by`/`in (...)` statt `>=`), semantisch für Themen, lexikalisch für exakte Namen; Parameter-Doku gekürzt | Weniger Tokens pro Aufruf, weniger Fehlbedienung |
+
+`/mcp`, `/healthz` und die OpenAPI-/Docs-Seite sind unverändert. Tests: 14 neue, bestehende Export-Tests an das neue Rückgabeformat angepasst.
+
+---
+
 ## Branch `feat/agent-friendly-results` (09.10.2026, unkommittiert)
 
 Anlass: Auswertung des Deep-Research-Agenten (deep-research-evaluation, Focus-Engine). Gemma-4-31B

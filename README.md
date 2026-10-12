@@ -206,29 +206,31 @@ get_datasets(search="luft", search_mode="lexical")
 get_datasets(search="bevölkerung", refine="publisher:Statistisches Amt")
 ```
 
+`get_datasets` also returns `next_offset` for paging (null when there is no next page).
+
 ### `get_dataset`
-Get detailed metadata for a specific dataset (fields, schema, publisher).
+Get detailed metadata for a specific dataset (fields with name, type, label, short description, unit, sortable/facet flags; publisher; `url`, `title`, `modified`).
 
 ```
 get_dataset(dataset_id="100113")
 ```
 
 ### `get_records`
-Query records from a dataset with ODSQL filtering.
+Query records from a dataset with ODSQL filtering. The result is citable on its own: `dataset_id`, `url`, `title`, `modified` (the dataset's Stand; title and modified come from a cached catalog lookup and are omitted if it fails), plus `total_count`, `next_offset` (null on the last page) and `results`. Output is capped at about 12,000 characters; if rows were cut, `truncated: true` and a `hint` say so (use `select`, `group_by`, a smaller `limit` or `next_offset`).
 
 ```
 get_records(dataset_id="100113", where="pm25 > 10", limit=100, order_by="time DESC")
 ```
 
 ### `get_facets`
-Get available facet values for filtering.
+Get available facet values for filtering. Without `facet`, every facet is returned with at most 30 values and `total_values`; with a name, up to 100.
 
 ```
 get_facets(facet="publisher")  # Options: publisher, keyword, theme, features, modified, language
 ```
 
 ### `export_dataset_url`
-Get download URL for dataset export.
+Get download URL for dataset export. Returns an object `{download_url, format, dataset_id, url, title, modified}` (older versions returned the URL as a plain string).
 
 ```
 export_dataset_url(dataset_id="100113", format="csv", where="sensornr=240")

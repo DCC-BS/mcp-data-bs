@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("DATA_PORTAL_DOMAIN", "test-domain")
+
 import pytest
 
 
@@ -16,3 +20,12 @@ def mock_fetch(monkeypatch):
         return calls
 
     return _install
+
+
+@pytest.fixture(autouse=True)
+def _clear_meta_cache():
+    import main
+
+    main._meta_cache.clear()
+    yield
+    main._meta_cache.clear()
