@@ -466,8 +466,82 @@ async def test_get_facets_named_reports_total(mock_fetch):
     assert await main.get_facets(facet="theme") == {
         "facet": "theme",
         "total_values": 1,
-        "values": [{"name": "a", "count": 1}],
+        "values": [
+            {
+                "name": "a",
+                "count": 1,
+                "url": f"https://{main.DOMAIN}/explore/?refine.theme=a",
+                "citation_label": f"{main.DOMAIN} · theme: a",
+            }
+        ],
     }
+
+
+@pytest.mark.anyio
+async def test_facet_values_are_citable_and_largest_first(mock_fetch):
+    import main
+
+    values = [{"name": f"Amt {i:03d}", "value": f"Amt {i:03d}", "count": i} for i in range(150)]
+    mock_fetch({"facets": [{"name": "publisher", "facets": values}]})
+
+    result = await main.get_facets(facet="publisher")
+
+    assert result["total_values"] == 150 and result["truncated"] is True
+    first = result["values"][0]
+    assert first["count"] == 149  # sorted by count before the cap of 100, not alphabetically
+    assert first["url"] == f"https://{main.DOMAIN}/explore/?refine.publisher=Amt%20149"
+    assert first["citation_label"] == f"{main.DOMAIN} · publisher: Amt 149"
+    assert min(v["count"] for v in result["values"]) == 50
+
+
+@pytest.mark.anyio
+async def test_all_facets_carry_catalog_url(mock_fetch):
+    import main
+
+    mock_fetch(
+        {
+            "facets": [
+                {
+                    "name": "theme",
+                    "facets": [{"name": "Gesundheit", "value": "Gesundheit", "count": 37}],
+                }
+            ]
+        }
+    )
+
+    (theme,) = (await main.get_facets())["facets"]
+
+    assert theme["url"] == f"https://{main.DOMAIN}/explore/"
+    assert theme["citation_label"] == f"{main.DOMAIN} · theme"
+    assert theme["values"][0]["url"].endswith("/explore/?refine.theme=Gesundheit")
+
+
+@pytest.mark.anyio
+async def test_results_carry_citation_label(monkeypatch, mock_fetch):
+    import main
+
+    mock_fetch(
+        {
+            "total_count": 1,
+            "results": [
+                {"dataset_id": "100010", "metas": {"default": {"title": "Leerstehende Wohnungen"}}}
+            ],
+        }
+    )
+    (hit,) = (await main.get_datasets(search="Leerwohnungen"))["results"]
+    assert hit["citation_label"] == f"{main.DOMAIN} · Leerstehende Wohnungen"
+
+    _router(monkeypatch, {"/catalog/datasets": META})
+    export = await main.export_dataset_url("100010", format="csv")
+    assert export["citation_label"] == f"{main.DOMAIN} · Leerstehende Wohnungen"
+
+
+def test_server_sends_short_instructions_without_citation_format():
+    import main
+
+    assert main.mcp.instructions == main.INSTRUCTIONS
+    assert 0 < len(main.INSTRUCTIONS) < 1500
+    assert "get_dataset" in main.INSTRUCTIONS and "cite" not in main.INSTRUCTIONS.lower()
 
 
 @pytest.mark.anyio

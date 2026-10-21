@@ -1,5 +1,20 @@
 # Änderungsübersicht — mcp-data-bs
 
+## Branch `feat/citable-facets-and-labels` (21.10.2026)
+
+Anlass: Citation-Badges in Bebbi Bot (Open WebUI). Der Client macht jedes Ergebnis-Item mit `url` zur Quelle `[n]` und braucht dafür einen kurzen Namen. Facetten-Werte hatten keine URL, also bekamen Antworten wie «Das Statistische Amt publiziert 94 Datensätze» keine Quelle, und das Modell setzte trotzdem Quellennummern ohne Badge. Der Client baute die Facetten-URLs und die Labels bisher selbst.
+
+| Änderung | Warum |
+|---|---|
+| `citation_label` (`<Domain> · <Titel>`) in `get_datasets`, `get_dataset`, `get_records`, `export_dataset_url` | Kurzer, eindeutiger Name in der Quellenliste des Clients |
+| `get_facets`: pro Wert `url` (Katalog gefiltert auf den Wert, `?refine.<facet>=<wert>`) und `citation_label`; ohne `facet` zusätzlich `url` und `citation_label` pro Facette | Eine Zahl aus den Facetten wird zitierbar und führt auf die passende Datensatzliste |
+| `get_facets`: Werte nach `count` absteigend sortiert, bevor gekappt wird | Das Portal liefert alphabetisch; ohne `facet` (30 Werte) fiel z. B. das Statistische Amt (94 Datensätze) weg |
+| Kurze `instructions` (566 Zeichen) an den Client: welches Werkzeug wofür, Jahresfelder als Text, `get_dataset` vor `get_records`; kein Zitierformat | Open WebUI hängt sie an jede Systemnachricht; bisher sendete der Server keine |
+
+Nicht abwärtskompatibel ist nichts: neue Felder, gleiche Struktur. Clients, die die Werte von `get_facets` in Originalreihenfolge erwarten, sehen sie jetzt nach Anzahl sortiert. Tests: 5 neue, ein bestehender Facetten-Test um die neuen Felder ergänzt.
+
+---
+
 ## Branch `feat/agent-citable-results` (09.10.2026)
 
 Anlass: Der Deep-Research-Agent macht jedes Ergebnis mit URL-Feld zur zitierbaren Quelle (Titel aus `title`, Datum aus `modified`). Ergebnisse von `get_records` hatten keinen Titel und kein Datum, grosse Antworten sprengten das Kontextfenster von Gemma-4-31B.
