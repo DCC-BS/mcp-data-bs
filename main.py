@@ -92,7 +92,20 @@ class RelaxedAcceptHeaderMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-mcp = MCPServer(DOMAIN)
+# Sent to the client when a session starts; Open WebUI appends it to the system message of every chat with this
+# server on, so it stays short and says which tool answers what. No citation format: the client decides how sources
+# are shown (citation_label, url and modified on every result are what it needs).
+INSTRUCTIONS = (
+    f"Open data catalog of {DOMAIN}: datasets with records, metadata and download links. "
+    "Find datasets on a topic with get_datasets (semantic for topics, lexical for exact names). "
+    "Call get_dataset before get_records to learn the exact field names and types. "
+    "Read values with get_records using select, where, group_by, order_by and limit; year fields are often text, "
+    'so use group_by/order_by or in ("2020","2021") instead of >=. '
+    "Count datasets per theme, publisher or keyword with get_facets. "
+    "Build a download link for a whole or filtered dataset with export_dataset_url."
+)
+
+mcp = MCPServer(DOMAIN, instructions=INSTRUCTIONS)
 
 MCP_HTTP_SETTINGS = {
     "streamable_http_path": "/mcp",
@@ -137,6 +150,12 @@ def dataset_url(dataset_id) -> str:
     return f"https://{DOMAIN}/explore/dataset/{dataset_id}/"
 
 
+def citation_label(title) -> str | None:
+    """Short name of a result for a client's citation list: portal and dataset title."""
+    title = _to_str(title).strip()
+    return f"{DOMAIN} · {title}" if title else None
+
+
 def _to_str(value) -> str:
     if isinstance(value, list):
         return " ".join(str(v) for v in value)
@@ -159,6 +178,7 @@ def _simplify_dataset(data: dict) -> dict:
         "dataset_id": data.get("dataset_id"),
         "title": _to_str(default.get("title")),
         "url": dataset_url(data.get("dataset_id")),
+        "citation_label": citation_label(default.get("title")),
         # list results: the start of the description; get_dataset returns all of it
         "description": _short(_to_str(default.get("description"))),
         "theme": _to_str(default.get("theme")),
@@ -322,6 +342,7 @@ async def get_dataset(dataset_id: str) -> dict:
         "dataset_id": data.get("dataset_id"),
         "title": metas.get("default", {}).get("title"),
         "url": dataset_url(data.get("dataset_id")),
+        "citation_label": citation_label(metas.get("default", {}).get("title")),
         "description": metas.get("default", {}).get("description"),
         "theme": metas.get("default", {}).get("theme"),
         "keyword": metas.get("default", {}).get("keyword", []),
@@ -416,6 +437,8 @@ async def get_records(
     meta = await _dataset_meta(dataset_id)
     head: dict = {"dataset_id": dataset_id.strip(), "url": dataset_url(dataset_id.strip())}
     head.update(meta)
+    if citation_label(meta.get("title")):
+        head["citation_label"] = citation_label(meta.get("title"))
     rows = data.get("results")
     if not isinstance(rows, list):
         return {**head, **data}
@@ -442,6 +465,18 @@ FACET_VALUES_ALL = 30
 FACET_VALUES_ONE = 100
 
 
+def _citable_value(facet, value: dict) -> dict:
+    """A facet value with the catalog page filtered on it: a count the answer gives can be cited and opened."""
+    raw = value.get("value", value.get("name"))
+    if raw is None or not facet:
+        return value
+    return {
+        **value,
+        "url": f"https://{DOMAIN}/explore/?refine.{quote(str(facet), safe='')}={quote(str(raw), safe='')}",
+        "citation_label": f"{DOMAIN} · {facet}: {value.get('name', raw)}",
+    }
+
+
 @mcp.tool(
     title="Get Facet Values",
     description=(
@@ -464,9 +499,15 @@ async def get_facets(facet: str | None = None) -> dict:
     if not isinstance(facets, list):
         return data
 
-    def capped(values, cap: int) -> dict:
-        values = values if isinstance(values, list) else []
-        out: dict = {"total_values": len(values), "values": values[:cap]}
+    def capped(name, values, cap: int) -> dict:
+        # Largest first, then cut: the portal sends the values alphabetically, so a cap would otherwise drop
+        # large publishers that sort late.
+        values = [v for v in values if isinstance(v, dict)] if isinstance(values, list) else []
+        values = sorted(values, key=lambda v: -(v.get("count") or 0))
+        out: dict = {
+            "total_values": len(values),
+            "values": [_citable_value(name, v) for v in values[:cap]],
+        }
         if len(values) > cap:
             out["truncated"] = True
         return out
@@ -474,11 +515,16 @@ async def get_facets(facet: str | None = None) -> dict:
     if facet:
         for f in facets:
             if isinstance(f, dict) and f.get("name") == facet:
-                return {"facet": facet, **capped(f.get("facets", []), FACET_VALUES_ONE)}
+                return {"facet": facet, **capped(facet, f.get("facets", []), FACET_VALUES_ONE)}
         return data
     return {
         "facets": [
-            {"name": f.get("name"), **capped(f.get("facets", []), FACET_VALUES_ALL)}
+            {
+                "name": f.get("name"),
+                "url": f"https://{DOMAIN}/explore/",
+                "citation_label": f"{DOMAIN} · {f.get('name')}",
+                **capped(f.get("name"), f.get("facets", []), FACET_VALUES_ALL),
+            }
             for f in facets
             if isinstance(f, dict)
         ],
@@ -544,6 +590,7 @@ async def export_dataset_url(
         "dataset_id": dataset_id.strip(),
         "url": dataset_url(dataset_id.strip()),
         **meta,
+        **({"citation_label": citation_label(meta["title"])} if meta.get("title") else {}),
     }
 
 
