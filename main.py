@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -13,6 +14,13 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 import api_docs
+
+# The mcp SDK logs INFO chatter on every streamable-HTTP request: with
+# stateless_http=True each request gets a throwaway transport that the session
+# manager tears down afterwards, logging "Terminating session: None". That is
+# normal teardown, not an error — keep production logs quiet; the SDK's
+# warnings and errors still surface.
+logging.getLogger("mcp").setLevel(logging.WARNING)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
