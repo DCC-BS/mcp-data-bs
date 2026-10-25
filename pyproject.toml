@@ -33,3 +33,10 @@ line-length = 100
 
 [tool.hatch.build.targets.wheel.force-include]
 ".env.example" = ".env.example"
+
+[tool.uv]
+# Supply-chain cooldown: only resolve releases older than 7 days.
+exclude-newer = "P7D"
+# TEMPORARY until 2026-10-29: security releases of certifi younger than 7 days. The weekly
+# dependency routine removes these entries once the locked versions are 7 days old.
+exclude-newer-package = { certifi = "P0D" }
