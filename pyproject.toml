@@ -33,3 +33,11 @@ line-length = 100
 
 [tool.hatch.build.targets.wheel.force-include]
 ".env.example" = ".env.example"
+
+[tool.uv]
+# Supply-chain cooldown: uv only uses distributions uploaded at least 7 days ago.
+exclude-newer = "P7D"
+# TEMPORARY until 2026-10-29: certifi skip the cooldown entirely (P0D), so the locked
+# security fixes don't get downgraded. The weekly dependency routine removes only these temporary
+# entries once the locked versions are 7 days old; Renovate's 14-day minimum age still applies.
+exclude-newer-package = { certifi = "P0D" }
